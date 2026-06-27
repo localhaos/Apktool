@@ -1,58 +1,124 @@
-### Apktool
-_This is the repository for Apktool. The website is at the [apktool.org](https://github.com/iBotPeaches/apktool.org) repository._
+# apktool-rebase-lab
 
-[![CI](https://github.com/iBotPeaches/Apktool/actions/workflows/build.yml/badge.svg)](https://github.com/iBotPeaches/Apktool/actions/workflows/test.yml)
-[![Software License](https://img.shields.io/badge/license-Apache%202.0-brightgreen.svg)](https://github.com/iBotPeaches/Apktool/blob/master/LICENSE.md)
+Nadbudowa nad upstream `iBotPeaches/Apktool`, utrzymywana jako overlay/rebase. Repo nie jest ciężkim forkiem: klonuje aktualny upstream, kopiuje lokalne klasy rozszerzeń i patchuje minimalnie `Main.java`.
 
-Apktool is a tool for reverse engineering third-party, closed, binary, Android apps. It can decode resources to nearly original form and rebuild them after making some modifications; it makes it possible to debug smali code step-by-step. It also makes working with apps easier thanks to project-like file structure and automation of some repetitive tasks such as building apk, etc.
+## Zakres aktualnej wersji
 
-Apktool is **NOT** intended for piracy and other non-legal uses. It could be used for localizing and adding features, adding support for custom platforms, and other GOOD purposes. Just try to be fair with the authors of an app, that you use and probably like.
+- pobiera upstream Apktool z gałęzi `main`,
+- dodaje komendę `doctor` / `x-doctor`,
+- dodaje pre-hook przed `apktool d|decode`,
+- zapisuje sumy kontrolne oryginalnego APK i wszystkich wpisów ZIP przed dekompilacją,
+- jeżeli wykryje naprawialny uszkodzony magic header, tworzy sidecar APK i dekompiluje sidecar zamiast modyfikować oryginał,
+- wykrywa `okhttp3` w zasobach i w DEX strings,
+- naprawia `okhttp3/internal/publicsuffix/publicsuffixes.gz`, gdy zaczyna się od podejrzanego prefiksu `96 38` zamiast gzip magic `1f 8b`.
 
-### Branches
-- `main` - Apktool 3.x branch
-- `2.x` - Maintenance branch for Apktool 2.x releases
+## Granica funkcjonalna
 
-#### Support
-- [Project Page](https://apktool.org)
-- [#apktool on libera.chat](https://web.libera.chat)
+Implementacja nie obchodzi runtime anti-tamper, podpisów, płatnych funkcji, DRM, license checks ani logiki integralności aplikacji. Naprawa dotyczy tylko warstwy kontenera APK/ZIP i nagłówków zasobów, których nie trzeba interpretować jako modyfikacji logiki programu.
 
-#### Security Vulnerabilities
+## Build lokalny
 
-If you discover a security vulnerability within Apktool, please send an e-mail to Connor Tumbleson at connor.tumbleson(at)gmail.com. All security vulnerabilities will be promptly addressed.
+Linux/macOS/Git Bash:
 
-#### Links
-- [Downloads](https://bitbucket.org/iBotPeaches/apktool/downloads)
-- [Downloads Mirror](https://connortumbleson.com/apktool)
-- [How to Build](https://apktool.org/docs/build)
-- [Documentation](https://apktool.org/wiki/the-basics/intro)
-- [Bug Reports](https://github.com/iBotPeaches/Apktool/issues)
-- [Changelog/Information](https://apktool.org/blog)
-- [XDA Post](https://forum.xda-developers.com/t/util-dec-2-2020-apktool-tool-for-reverse-engineering-apk-files.1755243/)
-- [Source (GitHub)](https://github.com/iBotPeaches/Apktool)
-- [Source (Bitbucket)](https://bitbucket.org/iBotPeaches/apktool/)
+```bash
+./scripts/sync-upstream.sh
+```
 
+Windows PowerShell:
 
-## Sponsors
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\sync-upstream.ps1
+```
 
-Special thanks goes to the following sponsors:
+Wynikowy JAR zwykle trafia do:
 
-### Sourcetoad
-[Sourcetoad](https://sourcetoad.com/) is an award-winning software and app development firm committed to the co-creation of technology solutions that solve complex business problems, delight users, and help our clients achieve their goals.
+```text
+work/Apktool/brut.apktool/apktool-cli/build/libs/apktool-cli-all.jar
+```
 
-<a href="https://www.sourcetoad.com" alt="Sourcetoad">
-    <picture>
-        <img src="https://github.com/ibotpeaches/apktool/raw/main/.github/assets/sponsors/sourcetoad-horizontal.svg">
-    </picture>
-</a>
+## Użycie diagnostyki
 
-### Emerge Tools
+```bash
+java -jar apktool-cli-all.jar doctor app.apk
+java -jar apktool-cli-all.jar doctor --json app.apk
+```
 
-[Emerge Tools](https://www.emergetools.com) is a suite of revolutionary products designed to supercharge mobile apps and the teams that build them.
+## Użycie naprawy bez dekompilacji
 
-<a href="https://www.emergetools.com" alt="Emerge Tools">
-    <picture>
-        <source media="(prefers-color-scheme: dark)" srcset="https://github.com/ibotpeaches/apktool/raw/main/.github/assets/sponsors/emerge-tools-vertical-white.svg">
-        <source media="(prefers-color-scheme: light)" srcset="https://github.com/ibotpeaches/apktool/raw/main/.github/assets/sponsors/emerge-tools-vertical-black.svg">
-        <img src="https://github.com/ibotpeaches/apktool/raw/main/.github/assets/sponsors/emerge-tools-vertical-black.svg">
-    </picture>
-</a>
+```bash
+java -jar apktool-cli-all.jar doctor --fix app.apk
+java -jar apktool-cli-all.jar doctor --fix -o app.fixed.apk app.apk
+```
+
+`--fix` nigdy nie nadpisuje wejściowego APK. Jeżeli są naprawialne anomalie, tworzy `*.repaired.apk`. Jeżeli nie ma czego naprawiać, nie produkuje zbędnego APK.
+
+## Automatyka przed dekompilacją
+
+Po patchu normalne:
+
+```bash
+java -jar apktool-cli-all.jar d app.apk
+```
+
+robi preflight:
+
+1. zapisuje manifest sum kontrolnych do:
+
+```text
+<outDir>.original-checksums.json
+```
+
+2. wykrywa naprawialne wpisy,
+3. jeżeli trzeba, tworzy:
+
+```text
+<outDir>.repaired-input.apk
+```
+
+4. uruchamia właściwy `ApkDecoder` na oryginale albo na sidecarze.
+
+Dla domyślnego `app.apk` i domyślnego outputu `app` powstaną np.:
+
+```text
+app.original-checksums.json
+app.repaired-input.apk
+app/
+```
+
+## Obsługiwane automatyczne naprawy
+
+Aktualne reguły są celowo konserwatywne:
+
+| Wejście | Warunek | Akcja |
+|---|---:|---|
+| `AndroidManifest.xml` | prefix `96 38` | zamiana początku na binary XML magic `03 00 08 00` |
+| `res/**/*.xml` | prefix `96 38` | zamiana początku na binary XML magic `03 00 08 00` |
+| `resources.arsc` | prefix `96 38` | zamiana początku na ARSC magic `02 00 0c 00` |
+| `okhttp3/internal/publicsuffix/publicsuffixes.gz` | prefix `96 38` | zamiana początku na gzip magic `1f 8b` |
+
+Dodatkowe przypadki należy dopisywać jako jawne reguły w `ApkDoctor.repairEntry()`. Nie ma globalnej naprawy „dowolnego `96 38`”, bo to generowałoby fałszywe pozytywy i korupcję binarek.
+
+## Manifest sum kontrolnych
+
+Manifest zawiera:
+
+- SHA-256 całego APK,
+- dla każdego wpisu ZIP/APK: nazwę, rozmiar, rozmiar skompresowany, CRC32 i SHA-256 nieskompresowanej zawartości.
+
+Format:
+
+```json
+{
+  "schema": "apktool-rebase-lab.checksums.v1",
+  "createdUtc": "2026-06-27T00:00:00Z",
+  "apk": "app.apk",
+  "apkSha256": "...",
+  "entries": [
+    {"name": "AndroidManifest.xml", "size": 123, "compressedSize": 120, "crc32": "00000000", "sha256": "..."}
+  ]
+}
+```
+
+## 65536 / 0x10000
+
+`65536` dziesiętnie to `0x10000`, nie `0x65536`. W DEX jest to limit indeksów 16-bitowych dla części tabel. Lokalny patch nie próbuje zwiększać tego limitu, bo poprawnym kierunkiem jest multidex albo ograniczenie zmian w danym `classes.dex`.
